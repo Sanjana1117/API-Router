@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DQN API Router - 3D Visualizer</title>
+    <style>
+        body {
+            margin: 0;
+            background-color: #030712;
+            color: #f3f4f6;
+            font-family: system-ui, -apple-system, sans-serif;
+            overflow: hidden;
+        }
+        #ui-overlay {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            z-index: 10;
+            background: rgba(17, 24, 39, 0.85);
+            backdrop-filter: blur(8px);
+            border: 1px solid #374151;
+            padding: 20px;
+            border-radius: 12px;
+            width: 320px;
+            box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.5);
+        }
+        h1 { font-size: 16px; margin: 0 0 4px 0; color: #818cf8; }
+        p { font-size: 12px; color: #9ca3af; margin: 0 0 16px 0; }
+        .metric { background: #1f2937; padding: 10px; border-radius: 8px; margin-bottom: 8px; font-size: 13px; }
+        button {
+            width: 100%;
+            background: #4f46e5;
+            color: white;
+            border: none;
+            padding: 10px;
+            border-radius: 6px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+        button:hover { background: #4338ca; }
+    </style>
+    <!-- Include Three.js from CDN -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+</head>
+<body>
+
+    <div id="ui-overlay">
+        <h1>DQN Live Router</h1>
+        <p>Connecting to FastAPI WebSocket stream...</p>
+        <div id="status" class="metric">Status: Disconnected</div>
+        <div id="decision" class="metric">Last Routed: None</div>
+        <div id="metrics" class="metric">Cost: ₹0 | Latency: 0ms</div>
+        <button onclick="triggerRequest()">Send Manual Request</button>
+    </div>
+
+    <script>
+        // --- Three.js Scene Setup ---
+        const scene = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 1000);
+        camera.position.set(0, 5, 15);
+        camera.lookAt(0, 0, 0);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        document.body.appendChild(renderer.domElement);
+
+        // Lighting
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.8);
+        scene.add(ambientLight);
+        const pointLight = new THREE.PointLight(0x4f46e5, 2, 50);
+        pointLight.position.set(0, 10, 5);
+        scene.add(pointLight);
+
+        // Create Nodes (Client, Router Core, Provider A, B, C)
+        const nodeGeometry = new THREE.SphereGeometry(0.6, 32, 32);
+        
+        const clientMat = new THREE.MeshStandardMaterial({ color: 0x38bdf8 });
+        const clientNode = new THREE.Mesh(nodeGeometry, clientMat);
+        clientNode.position.set(-6, 0, 0);
+        scene.add(clientNode);
+
+        const routerMat = new THREE.MeshStandardMaterial({ color: 0x818cf8, emissive: 0x4f46e5, emissiveIntensity: 0.5 });
+        const routerNode = new THREE.Mesh(nodeGeometry, routerMat);
+        routerNode.position.set(0, 0, 0);
+        scene.add(routerNode);
+
+        const providerPositions = [
+            { name: 'A', x: 6, y: 2, color: 0xf43f5e },
+            { name: 'B', x: 6, y: 0, color: 0x10b981 },
+            { name: 'C', x: 6, y: -2, color: 0xf59e0b }
+        ];
+
+        const providerMeshes = {};
+        providerPositions.forEach(p => {
+            const mat = new THREE.MeshStandardMaterial({ color: p.color });
+            const mesh = new THREE.Mesh(nodeGeometry, mat);
+            mesh.position.set(p.x, p.y, 0);
+            scene.add(mesh);
+            providerMeshes[p.name] = mesh;
+        });
+
+        // Request Packet Animation Object
+        const packetGeo = new THREE.SphereGeometry(0.2, 16, 16);
+        const packetMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
+        const packet = new THREE.Mesh(packetGeo, packetMat);
+        packet.visible = false;
+        scene.add(packet);
+
+        let animating = false;
+        let targetProviderPos = new THREE.Vector3(6, 0, 0);
+        let animProgress = 0;
+
+        function animatePacket(providerName) {
+            const target = providerMeshes[providerName]?.position;
+            if (target) {
+                targetProviderPos.copy(target);
+                packet.position.set(-6, 0, 0);
+                packet.visible = true;
+                animProgress = 0;
+                animating = true;
+            }
+        }
+
+        // --- WebSocket Connection to FastAPI ---
+        const ws = new WebSocket("ws://127.0.0.1:8000/ws/simulate");
+
+        ws.onopen = () => {
+            document.getElementById('status').innerText = "Status: Connected & Streaming";
+        };
+
+        ws.onmessage = (event) => {
+            const data = JSON.parse(event.data);
+            document.getElementById('decision').innerText = `Routed to: Provider ${data.chosen_provider} (Status: ${data.status})`;
+            document.getElementById('metrics').innerText = `Cost: Rs. ${data.cost} | Latency: ${data.latency}ms`;
+            
+            animatePacket(data.chosen_provider);
+        };
+
+        ws.onclose = () => {
+            document.getElementById('status').innerText = "Status: Disconnected";
+        };
+
+        async function triggerRequest() {
+            try {
+                await fetch("http://127.0.0.1:8000/route", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ traffic: 5 })
+                });
+            } catch (e) {
+                console.error("Manual trigger error", e);
+            }
+        }
+
+        // --- Render Loop ---
+        function animate() {
+            requestAnimationFrame(animate);
+            routerNode.rotation.y += 0.01;
+
+            if (animating) {
+                animProgress += 0.03;
+                if (animProgress <= 1) {
+                    const p1 = new THREE.Vector3(-6, 0, 0);
+                    const p2 = targetProviderPos;
+                    
+                    if (animProgress < 0.5) {
+                        packet.position.lerpVectors(p1, routerNode.position, animProgress * 2);
+                    } else {
+                        packet.position.lerpVectors(routerNode.position, p2, (animProgress - 0.5) * 2);
+                    }
+                } else {
+                    animating = false;
+                    packet.visible = false;
+                }
+            }
+
+            renderer.render(scene, camera);
+        }
+        animate();
+
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+    </script>
+</body>
+</html>
